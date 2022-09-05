@@ -78,18 +78,18 @@ export class PlumoVerifier {
     return future;
   }
 
-  async fetchCeloBalanceVerified(address, tokenAddress) {
-    const logger = this.logger;
-    logger.info('Attempting to fetch verified CELO balance')
+
+  async getBlockHashThatITrust(address) {
+    this.logger.info('Attempting to fetch verified CELO balance')
     try {
       const plumo = await import('./plumo/index.js')
 
       const provider = this.provider
       const block = await provider.getBlock('latest')
       if (!block) throw new Error('Failed to retrieve latest block')
-      logger.debug(JSON.stringify(block))
+      this.logger.debug(JSON.stringify(block))
       const blockNumber = block.number
-      logger.debug(`Got block ${blockNumber}...`)
+      this.logger.debug(`Got block ${blockNumber}...`)
 
       const currentEpoch = Math.floor(blockNumber / EPOCH_DURATION)
       const numProofs = Math.ceil((currentEpoch - MIN_CIP22_EPOCH) / MAX_TRANSITIONS)
@@ -102,18 +102,18 @@ export class PlumoVerifier {
 
       const lastEpoch = MIN_CIP22_EPOCH + MAX_TRANSITIONS * (numProofs - 1);
       const validatorSet = await this.fetchAndVerify(plumo, lastEpoch, currentEpoch);
-      logger.debug('validator set', validatorSet)
+      this.logger.debug('validator set', validatorSet)
 
       const decoded = RLP.decode('0x' + block.extraData.slice(66))
       const [bitmap, aggregatedSeal, round] = decoded[4]
       const toHexString = (bytes) =>
         bytes.reduce((str, byte) => str + byte.toString(16).padStart(2, '0'), '')
 
-      logger.debug(toHexString(bitmap), toHexString(aggregatedSeal), toHexString(round))
+      this.logger.debug(toHexString(bitmap), toHexString(aggregatedSeal), toHexString(round))
 
       const message = block.hash.slice(2) + toHexString(round) + '02'
-      logger.debug('message: ' + message)
-      logger.info(
+      this.logger.debug('message: ' + message)
+      this.logger.info(
         `Verifying signature on block ${blockNumber} using the validator set from the Plumo proof...`
       )
       plumo.block_verify({
@@ -122,29 +122,57 @@ export class PlumoVerifier {
         validators: validatorSet.last,
         message,
       })
-      logger.info(`Getting account merkle proofs for account ${address}...`)
+      this.logger.info(`Getting account merkle proofs for account ${address}...`)
       const getAndVerify = new GetAndVerify(RPC_URL)
       const blockHashThatITrust = block.hash
       const untrustedAccount = address
 
-      if (!tokenAddress) {
-        let resp = await getAndVerify.accountAgainstBlockHash(untrustedAccount, blockHashThatITrust)
-        const balance = this.convert(resp.balance)
-        logger.info(`Done! Balance is ${balance}`)
-        return balance
-      } else {
-        let position = mappingAt('0x5', address);
-        let tokenResp = await getAndVerify.storageAgainstBlockHash(tokenAddress, position, blockHashThatITrust)
-        let balance = this.convert(tokenResp)
-        if (!balance) {
-          balance = 0;
-        }
-        logger.info(`Done! Balance is ${balance}`)
-        return balance
+      return {
+        getAndVerify,
+        blockHashThatITrust,
+        untrustedAccount,
       }
     } catch (error) {
       logger.error('Error fetching verified CELO balance', error)
       throw new Error('Plumo failure')
     }
+  }
+
+  async fetchCeloBalanceVerified(address, tokenAddress) {
+    this.logger.info('Attempting to fetch verified CELO balance')
+
+    const {
+      getAndVerify,
+      blockHashThatITrust,
+      untrustedAccount,
+    } = await this.getBlockHashThatITrust(address);
+
+    if (!tokenAddress) {
+      let resp = await getAndVerify.accountAgainstBlockHash(untrustedAccount, blockHashThatITrust)
+      const balance = this.convert(resp.balance)
+      this.logger.info(`Done! Balance is ${balance}`)
+      return balance
+    } else {
+      let position = mappingAt('0x5', address);
+      let tokenResp = await getAndVerify.storageAgainstBlockHash(tokenAddress, position, blockHashThatITrust)
+      let balance = this.convert(tokenResp)
+      if (!balance) {
+        balance = 0;
+      }
+      this.logger.info(`Done! Balance is ${balance}`)
+      return balance
+    }
+  }
+
+  async fetchVerifiedStorageAtGivenPosition(address, position="0x0") {
+      const {
+        getAndVerify,
+        blockHashThatITrust,
+      } = await this.getBlockHashThatITrust(address);
+      
+      const resp = await getAndVerify.storageAgainstBlockHash(address, mappingAt(position), blockHashThatITrust)
+
+      // resp is Buffer
+      return resp;
   }
 }
